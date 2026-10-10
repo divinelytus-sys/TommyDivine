@@ -1,3 +1,16 @@
+local lp = game:GetService("Players").LocalPlayer
+local gui = lp.PlayerGui:FindFirstChild("Main (minimal)")
+
+if gui then
+    local btn = gui:WaitForChild("ChooseTeam"):WaitForChild("Container")
+        :WaitForChild("Marines"):WaitForChild("Frame"):WaitForChild("TextButton")
+
+    repeat
+        task.wait()
+        pcall(firesignal, btn.Activated)
+    until not lp.PlayerGui:FindFirstChild("Main (minimal)")
+end
+
 if _G.AutoLeviathanFull_Loaded then
     local env = (getgenv and getgenv()) or _G
     if not env.ForceReload then
