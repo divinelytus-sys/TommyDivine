@@ -1,16 +1,3 @@
-local lp = game:GetService("Players").LocalPlayer
-local gui = lp.PlayerGui:FindFirstChild("Main (minimal)")
-
-if gui then
-    local btn = gui:WaitForChild("ChooseTeam"):WaitForChild("Container")
-        :WaitForChild("Marines"):WaitForChild("Frame"):WaitForChild("TextButton")
-
-    repeat
-        task.wait()
-        pcall(firesignal, btn.Activated)
-    until not lp.PlayerGui:FindFirstChild("Main (minimal)")
-end
-
 if _G.AutoLeviathanFull_Loaded then
     local env = (getgenv and getgenv()) or _G
     if not env.ForceReload then
@@ -313,6 +300,9 @@ if _G.WebhookSendLeviathan == nil then _G.WebhookSendLeviathan = false end
 if _G.WebhookSendHeartSpawn == nil then _G.WebhookSendHeartSpawn = false end
 if _G.WebhookSendHeartGot == nil then _G.WebhookSendHeartGot = false end
 if _G.WebhookSendLowPlayers == nil then _G.WebhookSendLowPlayers = false end
+if _G.WebhookSendFrozen == nil then _G.WebhookSendFrozen = false end
+if _G.WebhookSendEnchant == nil then _G.WebhookSendEnchant = false end
+if _G.WebhookSendGacha == nil then _G.WebhookSendGacha = false end
 local Character = LocalPlayer.Character
 local HD = Character and Character:FindFirstChild("Humanoid")
 local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
@@ -623,6 +613,9 @@ local ConfigKeys = {
     "WebhookSendHeartSpawn",
     "WebhookSendHeartGot",
     "WebhookSendLowPlayers",
+    "WebhookSendFrozen",
+    "WebhookSendEnchant",
+    "WebhookSendGacha",
     "ShowInfoUI",
 }
 local function EnsureConfigFolder()
@@ -5554,7 +5547,12 @@ task.spawn(function()
                 task.wait(0.25)
                 pcall(function()
                     for _, g in ipairs(vistos) do
-                        if g.Parent and g.Enabled then
+                        local ln = g.Name:lower()
+                        local protegido = false
+                        for _, k in ipairs({ "touch", "control", "chat", "main", "hud", "joystick", "backpack", "playerlist", "hotbar", "fluent", "mobile", "menu" }) do
+                            if ln:find(k, 1, true) then protegido = true break end
+                        end
+                        if not protegido and g.Parent and g.Enabled then
                             g.Enabled = false
                             limpiados[#limpiados + 1] = "GUI:" .. g.Name
                         end
@@ -5576,12 +5574,39 @@ task.spawn(function()
                 if conAdd then conAdd:Disconnect() end
                 if conDesc then conDesc:Disconnect() end
             end)
+            -- devolver el control del personaje (celular incluido)
+            pcall(function()
+                local lp2 = game:GetService("Players").LocalPlayer
+                local tg = lp2.PlayerGui:FindFirstChild("TouchGui")
+                if tg then tg.Enabled = true end
+                local pm = lp2.PlayerScripts:FindFirstChild("PlayerModule")
+                if pm then require(pm):GetControls():Enable() end
+                local ch = lp2.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                if hum then
+                    hum.PlatformStand = false
+                    workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+                    workspace.CurrentCamera.CameraSubject = hum
+                end
+                if root then root.Anchored = false end
+            end)
 
             local reporte = ("ok=%s result=%s extra=%s frutas %d->%d | limpiado=%s | nuevos=%s"):format(
                 tostring(ok), ser(result), ser(extra), antes, contarFrutas(),
                 table.concat(limpiados, ","), table.concat(extraDesc, " ; "))
             aviso(reporte)
             pcall(function() setclipboard(reporte) end)
+            pcall(function()
+                if _G.HubSendWebhook then
+                    local despues = contarFrutas()
+                    _G.HubSendWebhook("gacha",
+                        "Frutas (antes -> después): " .. antes .. " -> " .. despues
+                            .. "\nGanó fruta: " .. (despues > antes and "Sí" or "No")
+                            .. "\nRespuesta: " .. string.sub(ser(result), 1, 300),
+                        "Gacha de Ziole")
+                end
+            end)
 
             Env.ZioleBusy = false
         end
@@ -6526,9 +6551,16 @@ do
             end
             return table.concat(parts, ", ")
         end
-        local function EScrollCount()
+        local function EScrollCount(res)
             local label = tostring(_G.EnchantScroll)
             local nospace = string.gsub(label, " ", "")
+            -- la respuesta del servidor trae Scrolls = { ["Rare Scroll"] = {cantidad, ...} }
+            if type(res) == "table" and type(res.Scrolls) == "table" then
+                local e = res.Scrolls[label]
+                if type(e) == "table" and type(e[1]) == "number" and e[1] > 0 then
+                    return e[1]
+                end
+            end
             local okC, etc = pcall(GetCraftData)
             if not okC or type(etc) ~= "table" then
                 return nil
@@ -6544,6 +6576,19 @@ do
             end
             return nil
         end
+        local ELOG_FILE = "EnchantLog.txt"
+        local function ELog(line)
+            pcall(function()
+                local entry = os.date("%Y-%m-%d %H:%M:%S") .. " | " .. line .. "\n"
+                if appendfile then
+                    if not (isfile and isfile(ELOG_FILE)) then writefile(ELOG_FILE, "") end
+                    appendfile(ELOG_FILE, entry)
+                elseif writefile then
+                    local old = (isfile and isfile(ELOG_FILE)) and readfile(ELOG_FILE) or ""
+                    writefile(ELOG_FILE, old .. entry)
+                end
+            end)
+        end
         local function RunEnchant()
             EnchantRun = EnchantRun + 1
             local myRun = EnchantRun
@@ -6552,6 +6597,16 @@ do
                     return EnchantRun == myRun and _G.AutoEnchant
                 end
                 local function finish(msg)
+                    ELog("FIN | " .. msg)
+                    pcall(function()
+                        if _G.HubSendWebhook then
+                            _G.HubSendWebhook("enchant",
+                                "Arma: " .. tostring(_G.EnchantWeapon)
+                                    .. "\nPergamino: " .. tostring(_G.EnchantScroll)
+                                    .. "\nResultado: " .. tostring(msg),
+                                "Auto Enchant")
+                        end
+                    end)
                     ESet(msg)
                     SendNotify(T("enchant.auto"), msg)
                     if EnchantRun == myRun then
@@ -6581,6 +6636,7 @@ do
                     return finish(EMsg("EnchantInvoke remote not found", "No se encontró el remote EnchantInvoke"))
                 end
                 local rolls, last, checked = 0, "", false
+                local lastRes
                 while alive() do
                     local maxRolls = math.floor(tonumber(_G.EnchantMaxRolls) or 0)
                     if maxRolls > 0 and rolls >= maxRolls then
@@ -6596,13 +6652,15 @@ do
                             end)
                             if okC and type(res) == "table" and type(res.Modifiers) == "table" then
                                 checked = true
+                                lastRes = res
                                 last = ESummary(res)
+                                ELog(tostring(_G.EnchantWeapon) .. " | inicial | " .. last)
                                 if EEvaluate(res, wanted, _G.EnchantMode) then
                                     return finish(EMsg("Already meets the goal: ", "Ya cumple la meta: ") .. last)
                                 end
                             end
                         end
-                        local count = EScrollCount()
+                        local count = EScrollCount(lastRes)
                         if count ~= nil and count <= 0 then
                             pause(5, EMsg("Waiting for a ", "Esperando un ") .. tostring(_G.EnchantScroll) .. " | " .. rolls .. " | " .. last)
                         else
@@ -6612,7 +6670,10 @@ do
                             if ok2 and type(r) == "table" and type(r.Modifiers) == "table" then
                                 rolls = rolls + 1
                                 checked = true
+                                lastRes = r
                                 last = ESummary(r)
+                                ELog(tostring(_G.EnchantWeapon) .. " | " .. tostring(_G.EnchantScroll)
+                                    .. " | giro " .. rolls .. " | " .. last)
                                 ESet(rolls .. " | " .. last)
                                 if EEvaluate(r, wanted, _G.EnchantMode) then
                                     return finish(EMsg("Goal reached in " .. rolls .. " rolls: ", "Meta lograda en " .. rolls .. " giros: ") .. last)
@@ -6629,6 +6690,30 @@ do
                 end
             end)
         end
+        Tabs.Extra:AddButton({
+            Title = EMsg("Copy enchant log", "Copiar registro de enchants"),
+            Callback = function()
+                local txt
+                pcall(function()
+                    if isfile and isfile(ELOG_FILE) then txt = readfile(ELOG_FILE) end
+                end)
+                if txt and txt ~= "" then
+                    pcall(setclipboard, txt)
+                    SendNotify(T("enchant.auto"), EMsg("Log copied", "Registro copiado"))
+                else
+                    SendNotify(T("enchant.auto"), EMsg("Log is empty", "El registro está vacío"))
+                end
+            end,
+        })
+        Tabs.Extra:AddButton({
+            Title = EMsg("Clear enchant log", "Borrar registro de enchants"),
+            Callback = function()
+                pcall(function()
+                    if writefile then writefile(ELOG_FILE, "") end
+                end)
+                SendNotify(T("enchant.auto"), EMsg("Log cleared", "Registro borrado"))
+            end,
+        })
         EnchantPara = Tabs.Extra:AddParagraph({
             Title = T("enchant.status"),
             Content = T("notstarted"),
@@ -6799,6 +6884,7 @@ do
 end
 do
     local WebhookSendLock = false
+    local WebhookQueue = {}
     local AvatarCache = {}
     local function GetAvatarImage(userId)
         userId = tostring(userId)
@@ -6833,10 +6919,14 @@ do
             if onDone then onDone(false) end
             return false
         end
-        if WebhookSendLock then
-            if onDone then onDone(false) end
-            return false
+        if not tostring(_G.WebhookURL):match("^https://[%w%.]*discord[app]*%.com/api/webhooks/%d+/[%w_%-]+") then
+            print("[Webhook] el URL no parece un webhook de Discord (https://discord.com/api/webhooks/ID/TOKEN)")
         end
+        if WebhookSendLock then
+            WebhookQueue[#WebhookQueue + 1] = { content, title, onDone, mentionEveryone }
+            return true
+        end
+        _G.WebhookURL = (tostring(_G.WebhookURL):gsub("%s+", ""))
         local req = (syn and syn.request) or (http and http.request) or http_request or request
         local httpPost = http and http.post
         if not req and not httpPost then
@@ -6926,13 +7016,27 @@ do
                 end
                 local code = resp and (resp.StatusCode or resp.statusCode or resp.Status or resp.status)
                 ok = code == nil or code == 200 or code == 204
-                if not ok then
-                    print("[Webhook] envio fallido HTTP " .. tostring(code))
+                if code == 429 then
+                    local body429 = tostring(resp.Body or resp.body or "")
+                    local wait429 = tonumber(body429:match('"retry_after":%s*([%d%.]+)')) or 2
+                    table.insert(WebhookQueue, 1, { content, title, onDone, mentionEveryone })
+                    onDone = nil
+                    task.wait(wait429 + 0.5)
+                elseif not ok then
+                    print("[Webhook] respuesta: " .. string.sub(tostring(resp and (resp.Body or resp.body) or ""), 1, 150))
+                end
+                if not ok and code ~= 429 then
+                    print("[Webhook] envio fallido HTTP " .. tostring(code) .. (code == 404 and " (webhook borrado o URL incorrecta)" or ""))
                 end
             end)
             WebhookSendLock = false
             if onDone then
                 onDone(ok)
+            end
+            local nxt = table.remove(WebhookQueue, 1)
+            if nxt then
+                task.wait(1)
+                SendWebhook(nxt[1], nxt[2], nxt[3], nxt[4])
             end
         end)
         return true
@@ -6991,7 +7095,7 @@ do
         Placeholder = "https://discord.com/api/webhooks/...",
         Finished = true,
         Callback = function(Text)
-            _G.WebhookURL = tostring(Text or "")
+            _G.WebhookURL = (tostring(Text or ""):gsub("%s+", ""))
             SaveConfig()
         end,
     })
@@ -7084,6 +7188,43 @@ do
             SaveConfig()
         end,
     })
+    Tabs.Webhook:AddToggle("webhook.send.frozen", {
+        Title = (((_G.RJR_LanguageCode and _G.RJR_LanguageCode()) or "en") == "es")
+            and "Enviar cuando aparece Frozen Dimension" or "Send On Frozen Dimension",
+        Description = "@everyone",
+        Default = _G.WebhookSendFrozen,
+        Callback = function(State)
+            _G.WebhookSendFrozen = State
+            SaveConfig()
+        end,
+    })
+    _G.HubSendWebhook = function(kind, content, title)
+        if not (_G.AutoWebhook and _G.WebhookURL and _G.WebhookURL ~= "") then return end
+        if kind == "enchant" and not _G.WebhookSendEnchant then return end
+        if kind == "gacha" and not _G.WebhookSendGacha then return end
+        SendWebhookUI(content, title)
+    end
+    local function WMsg(en, es)
+        return (((_G.RJR_LanguageCode and _G.RJR_LanguageCode()) or "en") == "es") and es or en
+    end
+    Tabs.Webhook:AddToggle("webhook.send.enchant", {
+        Title = WMsg("Send On Enchant Finished", "Enviar al terminar el auto-enchant"),
+        Description = WMsg("Weapon, scroll and final result", "Arma, pergamino y resultado final"),
+        Default = _G.WebhookSendEnchant,
+        Callback = function(State)
+            _G.WebhookSendEnchant = State
+            SaveConfig()
+        end,
+    })
+    Tabs.Webhook:AddToggle("webhook.send.gacha", {
+        Title = WMsg("Send On Fruit Roll", "Enviar al girar fruta"),
+        Description = WMsg("Fruit count before/after each Ziole gacha roll", "Frutas antes/después de cada giro del gacha de Ziole"),
+        Default = _G.WebhookSendGacha,
+        Callback = function(State)
+            _G.WebhookSendGacha = State
+            SaveConfig()
+        end,
+    })
     local SendNowButton = Tabs.Webhook:AddButton({
         Title = T("webhook.send.now"),
         Callback = function()
@@ -7121,6 +7262,29 @@ do
         local PrevHeartSpawn = false
         local PrevHeartGot = false
         local PrevLowPlayers = false
+        local LEVI_FILE = "LeviCounter.txt"
+        local leviTotal, leviSession = 0, 0
+        pcall(function()
+            if isfile and isfile(LEVI_FILE) then
+                leviTotal = tonumber(readfile(LEVI_FILE)) or 0
+            end
+        end)
+        local frozenAnnounced, frozenLastSent = false, -1e9
+        local function findFrozen()
+            for _, root in ipairs({ workspace:FindFirstChild("Map"), workspace:FindFirstChild("WorldOrigin"), workspace }) do
+                if root then
+                    for _, o in ipairs(root:GetChildren()) do
+                        local n = o.Name:lower()
+                        if n:find("frozen", 1, true) and not n:find("heart", 1, true) then
+                            return o
+                        end
+                    end
+                end
+            end
+        end
+        local function playersText()
+            return #Players:GetPlayers() .. "/" .. Players.MaxPlayers
+        end
         while true do
             task.wait(1)
             if _G.AutoWebhook and _G.WebhookURL and _G.WebhookURL ~= "" then
@@ -7133,12 +7297,36 @@ do
                         end
                         PrevBribeReady = Ready
                     end
-                    if _G.WebhookSendLeviathan then
-                        local NowLV = SeaAPI.Leviathan_SegmentsExist()
-                        if NowLV and not PrevLeviathan then
-                            SendWebhookUI(T("wh.msg.leviathan"), T("wh.title.leviathan"))
+                    local NowLV = SeaAPI.Leviathan_SegmentsExist()
+                    if NowLV and not PrevLeviathan then
+                        leviSession = leviSession + 1
+                        leviTotal = leviTotal + 1
+                        pcall(function()
+                            if writefile then writefile(LEVI_FILE, tostring(leviTotal)) end
+                        end)
+                        if _G.WebhookSendLeviathan then
+                            SendWebhookUI(
+                                "Contador (sesión / total): " .. leviSession .. " / " .. leviTotal
+                                    .. "\nJugadores: " .. playersText()
+                                    .. "\nJobId: " .. game.JobId,
+                                T("wh.title.leviathan"))
                         end
-                        PrevLeviathan = NowLV
+                    end
+                    PrevLeviathan = NowLV
+                    if _G.WebhookSendFrozen then
+                        local found = findFrozen()
+                        if found and not frozenAnnounced and os.clock() - frozenLastSent >= 60 then
+                            frozenAnnounced = true
+                            frozenLastSent = os.clock()
+                            SendWebhookUI(
+                                "Objeto: " .. found.Name
+                                    .. "\nJugadores: " .. playersText()
+                                    .. "\nLeviathans (sesión / total): " .. leviSession .. " / " .. leviTotal
+                                    .. "\nJobId: " .. game.JobId,
+                                "❄️ Frozen Dimension", true)
+                        elseif not found then
+                            frozenAnnounced = false
+                        end
                     end
                     if _G.WebhookSendHeartSpawn then
                         local Map = workspace:FindFirstChild("Map")
